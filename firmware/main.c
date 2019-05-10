@@ -1063,6 +1063,78 @@ unsigned char I2C_Read( unsigned char ack )
 
 	return res;
 }
+
+uint8_t onewire_reset(void)
+{
+  uint8_t r;
+  uint8_t retries = 125;
+ 
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  { 
+    pinMode(B,DATA_PIN,INPUT);
+  }
+  // wait until the wire is high... just in case
+  do {
+    if (--retries == 0) return 0;
+    delayMicroseconds(2);
+  } while ( !(digitalRead(B,DATA_PIN)>>2));
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    digitalWrite(B,DATA_PIN,LOW);       // Drive the bus low
+    pinMode(B,DATA_PIN,OUTPUT);
+  }
+  delayMicroseconds(480);           // delay 480 microsecond (us)   
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    pinMode(B,DATA_PIN,INPUT); // allow it to float
+    delayMicroseconds(70);
+    r=!(digitalRead(B,DATA_PIN)>>2);// Sample for presence pulse from slave             
+  }
+  delayMicroseconds(410);           // delay 410 microsecond (us)    
+  return r;
+}
+
+void onewire_write_bit(uint8_t v)
+{
+  if (v & 1) {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) 
+    {
+      digitalWrite(B,DATA_PIN,LOW);
+      pinMode(B,DATA_PIN,OUTPUT);  // Drive the bus low    
+      delayMicroseconds(10);
+      digitalWrite(B,DATA_PIN,HIGH);    // Release the bus
+    }
+    delayMicroseconds(55);
+  } else {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {   
+      digitalWrite(B,DATA_PIN,LOW);
+      pinMode(B,DATA_PIN,OUTPUT);  // Drive the bus low  
+      delayMicroseconds(65);
+      digitalWrite(B,DATA_PIN,HIGH);    // Release the bus    
+      delayMicroseconds(5);
+    }
+  }
+   
+}
+
+uint8_t onewire_read_bit(void)
+{
+  
+  uint8_t r;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) 
+  {
+    pinMode(B,DATA_PIN,OUTPUT);  
+    digitalWrite(B,DATA_PIN,LOW); // Drive the bus low    
+    delayMicroseconds(6);         // delay 6 microsecond (us)
+    pinMode(B,DATA_PIN,INPUT);  // let pin float, pull up will raise
+    delayMicroseconds(9);
+    r = (digitalRead(B,DATA_PIN)>>2);  
+  }   
+  delayMicroseconds(55);
+  return r;
+}
+
 // ----------------------------------------------------------------------------
 
 
@@ -1162,46 +1234,17 @@ int main(void) {
 				// --------------------------------------------------------------------
 				jobState=0;
 			break;
-			case 2: /* onewire reset pulse */											
-				pinMode(B,DATA_PIN,OUTPUT);
-				digitalWrite(B,DATA_PIN,LOW);				// Drive the bus low
-				delayMicroseconds(480); 					// delay 480 microsecond (us)		
-				ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-				{	
-					digitalWrite(B,DATA_PIN,HIGH);			// Release the bus				
-					delayMicroseconds(70);					// delay 70 microsecond (us)
-					pinMode(B,DATA_PIN,INPUT);				
-					sendBuffer[0]=!(digitalRead(B,DATA_PIN)>>2);// Sample for presence pulse from slave							
-				}
-				delayMicroseconds(410);						// delay 410 microsecond (us)										
-				pinMode(B,DATA_PIN,OUTPUT);	   				// Release the bus
-				digitalWrite(B,DATA_PIN,HIGH);				
+			case 2: /* onewire reset pulse */
+				sendBuffer[0]=onewire_reset();       
 				sendBuffer[8]=1;				
 				jobState=0;
 			break;
 			case 3: /* onewire send byte */				
-				q=rxBuffer[0];
-				pinMode(B,DATA_PIN,OUTPUT);
+				q=rxBuffer[0];			
 				for (i=0;i<8;i++)
-				{		
-					ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-					{		
-						digitalWrite(B,DATA_PIN,LOW);		// Drive the bus low
-			
-						if ( q & 0x01)
-						{							
-							delayMicroseconds(6);			// delay 6 microsecond (us)						
-							digitalWrite(B,DATA_PIN,HIGH);	// Release the bus
-							delayMicroseconds(64);			// delay 64 microsecond (us)					
-						}
-						else
-						{						
-							delayMicroseconds(60);			// delay 60 microsecond (us)					
-							digitalWrite(B,DATA_PIN,HIGH);	// Release the bus
-							delayMicroseconds(10);			// delay 10 microsecond (us)										
-						}
-						q >>= 1;							// shift the data byte for the next bit to send
-					}
+				{
+					onewire_write_bit(q);
+					q >>= 1;              // shift the data byte for the next bit to send        
 				}					
 				jobState=0;
 			break;
@@ -1210,54 +1253,19 @@ int main(void) {
 				for(i=0;i<8;i++)
 				{
 					sendBuffer[0] >>= 1; 					// shift the result to get it ready for the next bit to receive
-					pinMode(B,DATA_PIN,OUTPUT);				
-					ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-					{	
-						digitalWrite(B,DATA_PIN,LOW);		// Drive the bus low
-						delayMicroseconds(6);				// delay 6 microsecond (us)
-						digitalWrite(B,DATA_PIN,HIGH);		// Release the bus
-						delayMicroseconds(10);				// delay 9 microsecond (us)					
-						pinMode(B,DATA_PIN,INPUT);				
-						q = (digitalRead(B,DATA_PIN)>>2);	// Read the status of OW_PIN
-					}
-					delayMicroseconds(55);					// delay 55 microsecond (us)					
+					q = onewire_read_bit();					
 					if (q)	sendBuffer[0] |= 0x80;			// if result is one, then set MS-bit
 				}				
 				sendBuffer[8]=1;
 				jobState=0;
 			break; 
 			case 5: /* onewire read bit */
-				pinMode(B,DATA_PIN,OUTPUT);	
-				ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-				{
-					digitalWrite(B,DATA_PIN,LOW);			// Drive the bus low
-					delayMicroseconds(6);					// delay 6 microsecond (us)
-					digitalWrite(B,DATA_PIN,HIGH);			// Release the bus
-					delayMicroseconds(10);					// delay 9 microsecond (us)				
-					pinMode(B,DATA_PIN,INPUT);				
-					sendBuffer[0]=(digitalRead(B,DATA_PIN)>>2); // Read the status of OW_PIN
-				}
+				sendBuffer[0]= onewire_read_bit();      
 				sendBuffer[8]=1;
 				jobState=0;
 			break;
 			case 6: /* onewire write bit */
-				pinMode(B,DATA_PIN,OUTPUT);
-				ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-				{		
-					digitalWrite(B,DATA_PIN,LOW);			// Drive the bus low		
-					if ( rxBuffer[0] & 0x01)
-					{							
-						delayMicroseconds(6);				// delay 6 microsecond (us)						
-						digitalWrite(B,DATA_PIN,HIGH);		// Release the bus
-						delayMicroseconds(64);				// delay 64 microsecond (us)					
-					}
-					else
-					{						
-						delayMicroseconds(60);				// delay 60 microsecond (us)					
-						digitalWrite(B,DATA_PIN,HIGH);		// Release the bus
-						delayMicroseconds(10);				// delay 10 microsecond (us)										
-					}
-				}
+				onewire_write_bit(rxBuffer[0]);       
 				jobState=0;
 			break;
 			case 7:  /* multiple spi send and receive */
